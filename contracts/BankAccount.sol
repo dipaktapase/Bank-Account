@@ -18,7 +18,7 @@ contract BankAccount {
     struct Account {
         address[] owners;
         uint balance;
-        mapping(uint => WithdrawRequest) WithdrawRequest;
+        mapping(uint => WithdrawRequest) withdrawRequest;
 
     }
 
@@ -40,20 +40,74 @@ contract BankAccount {
         _;
     }
 
+    modifier validOwners(address[] calldata owners) {
+        require(owners.length + 1 <= 4, "maximum of 4 owners per account");
+        for (uint i; i < owners.length; i++) {
+            for (uint j = i + 1; j < owners.length; j++) {
+                if (owners[i] == owners[j]) {
+                    revert("no duplicate owners");
+                }
+            }
+        }
+        _;
+    }
+
+    modifier sufficientBalance(uint accountId, uint amount) {
+        require(accounts[accountId].balance >= amount, "Insufficient balance");
+        _;
+    }
+
+    modifier canApprove(uint accountId, uint withdrawId) {
+        require(!accounts[accountId].withdrawRequest[withdrawId].approved, "this request is already approved");
+        require(accounts[accountId].withdrawRequest[withdrawId].user != msg.sender, "you cannot approve this request");
+        require(accounts[accountId].withdrawRequest[withdrawId].user != address(0), "this request does not exist");
+        require(!accounts[accountId].withdrawRequest[withdrawId].ownersApproved[msg.sender], "you have already approved this request");
+        _;
+    }
+
     function deposit(uint accountId) external payable accountOwner(accountId) {
         accounts[accountId].balance += msg.value;
     }
 
-    function createAccount(address[] calldata otherOwners) external {
-        
+    function createAccount(address[] calldata otherOwners) external validOwners(otherOwners) {
+        address[] memory owners = new address[](otherOwners.length + 1);
+        owners[otherOwners.length] = msg.sender;
+
+        uint id = nextAccountId;
+
+        for (uint idx; idx < owners.length; idx++) {
+            if (idx < owners.length - 1 ) {
+                owners[idx] = otherOwners[idx];
+            }
+
+            if (userAccounts[owners[idx]].length > 2) {
+                revert("Each user can have max of 3 accounts");
+            }
+            userAccounts[owners[idx]].push(id);
+        }
+
+        accounts[id].owners = owners;
+        nextAccountId++;
+        emit AccountCreated(owners, id, block.timestamp);
     }
 
-    function requestWithdrawl(uint accountId, uint amount) external {
-
+    function requestWithdrawl(uint accountId, uint amount) external accountOwner(accountId) sufficientBalance(accountId, amount) {
+        uint id = nextWithdrawId;
+        WithdrawRequest storage request = accounts[accountId].withdrawRequest[id];
+        request.user = msg.sender;
+        request.amount = amount;
+        nextWithdrawId++;
+        emit WithdrawRequested(msg.sender, accountId, id, amount, block.timestamp);
     } 
 
-    function approveWithdrawl(uint accountId, uint withdrawId) external {
+    function approveWithdrawl(uint accountId, uint withdrawId) external accountOwner(accountId) canApprove(accountId, withdrawId) {
+        WithdrawRequest storage request = accounts[accountId].withdrawRequest[withdrawId];
+        request.approvals++;
+        request.ownersApproved[msg.sender] = true;
 
+        if (request.approvals == accounts[accountId].owners.length - 1 ) {
+            request.approved = true;
+        }
     }
 
     function withdraw(uint accountId, uint withdrawId) external {
